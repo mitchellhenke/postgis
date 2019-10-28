@@ -953,22 +953,6 @@ extern POINT2D getPoint2d(const POINTARRAY *pa, uint32_t n);
  */
 extern int getPoint2d_p(const POINTARRAY *pa, uint32_t n, POINT2D *point);
 
-/**
-* Returns a POINT3DZ pointer into the POINTARRAY serialized_ptlist,
-* suitable for reading from. This is very high performance
-* and declared const because you aren't allowed to muck with the
-* values, only read them.
-*/
-extern const POINT3DZ* getPoint3dz_cp(const POINTARRAY *pa, uint32_t n);
-
-/**
-* Returns a POINT4D pointer into the POINTARRAY serialized_ptlist,
-* suitable for reading from. This is very high performance
-* and declared const because you aren't allowed to muck with the
-* values, only read them.
-*/
-extern const POINT4D* getPoint4d_cp(const POINTARRAY *pa, uint32_t n);
-
 /*
  * set point N to the given value
  * NOTE that the pointarray can be of any
@@ -1281,7 +1265,6 @@ extern float  next_float_up(double d);
 
 /* general utilities 2D */
 extern double  distance2d_pt_pt(const POINT2D *p1, const POINT2D *p2);
-extern double  distance2d_pt_seg(const POINT2D *p, const POINT2D *A, const POINT2D *B);
 extern double  distance2d_sqr_pt_seg(const POINT2D *p, const POINT2D *A, const POINT2D *B);
 extern LWGEOM* lwgeom_closest_line(const LWGEOM *lw1, const LWGEOM *lw2);
 extern LWGEOM* lwgeom_furthest_line(const LWGEOM *lw1, const LWGEOM *lw2);
@@ -1378,10 +1361,10 @@ extern void lwgeom_grid_in_place(LWGEOM *lwgeom, const gridspec *grid);
 extern void lwgeom_reverse_in_place(LWGEOM *lwgeom);
 extern void lwgeom_force_clockwise(LWGEOM *lwgeom);
 extern void lwgeom_longitude_shift(LWGEOM *lwgeom);
-extern void lwgeom_simplify_in_place(LWGEOM *igeom, double dist, int preserve_collapsed);
+extern int lwgeom_simplify_in_place(LWGEOM *igeom, double dist, int preserve_collapsed);
 extern void lwgeom_affine(LWGEOM *geom, const AFFINE *affine);
 extern void lwgeom_scale(LWGEOM *geom, const POINT4D *factors);
-extern void lwgeom_remove_repeated_points_in_place(LWGEOM *in, double tolerance);
+extern int lwgeom_remove_repeated_points_in_place(LWGEOM *in, double tolerance);
 
 
 /**

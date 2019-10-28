@@ -69,7 +69,8 @@ my $OPT_EXTVERSION = '';
 my $OPT_UPGRADE_PATH = '';
 our $OPT_UPGRADE_FROM = '';
 my $OPT_UPGRADE_TO = '';
-my $VERBOSE = 0;
+our $VERBOSE = 0;
+our $OPT_SCHEMA = 'public';
 
 GetOptions (
 	'verbose' => \$VERBOSE,
@@ -83,7 +84,8 @@ GetOptions (
 	'raster' => \$OPT_WITH_RASTER,
 	'sfcgal' => \$OPT_WITH_SFCGAL,
 	'expect' => \$OPT_EXPECT,
-	'extensions' => \$OPT_EXTENSIONS
+	'extensions' => \$OPT_EXTENSIONS,
+	'schema=s' => \$OPT_SCHEMA
 	);
 
 if ( @ARGV < 1 )
@@ -254,9 +256,9 @@ if ( ! $libver )
 
 sub scriptdir
 {
-	my $version = shift;
+	my ( $version, $systemwide ) = @_;
 	my $scriptdir;
-	if ( $version and $version ne $libver ) {
+	if ( $systemwide or ( $version and $version ne $libver ) ) {
 		my $pgis_majmin = $version;
 		$pgis_majmin =~ s/^([1-9]*\.[0-9]*).*/\1/;
 		$scriptdir = `pg_config --sharedir`;
@@ -299,11 +301,37 @@ sub create_upgrade_test_objects
     exit(1);
   }
 
+  $query = "insert into upgrade_test(g1,g2) values ";
+	$query .= "('POINT(0 0)', 'LINESTRING(0 0, 1 1)'), ";
+	$query .= "('POINT(1 0)', 'LINESTRING(0 1, 1 1)');";
+  my $ret = sql($query);
+  unless ( $ret =~ /^INSERT/ ) {
+    `dropdb $DB`;
+    print "\nSomething went wrong populating upgrade_test table: $ret.\n";
+    exit(1);
+  }
+
+  # my $query = "create view upgrade_view_test as ";
+  # $query .= "select st_union(g1) from upgrade_test;";
+  # my $ret = sql($query);
+  # unless ( $ret =~ /^CREATE/ ) {
+  #   `dropdb $DB`;
+  #   print "\nSomething went wrong creating upgrade_view_test view: $ret.\n";
+  #   exit(1);
+  # }
+
   if ( $OPT_WITH_RASTER )
   {
-    $query = "insert into upgrade_test(r) ";
-    $query .= "select ST_AddBand(ST_MakeEmptyRaster(10, 10, 1, 1, 2, 2, 0, 0,4326), 1, '8BSI'::text, -129, NULL);";
-    $query .= "set client_min_messages to error; select AddRasterConstraints('upgrade_test', 'r')";
+    $query = "UPDATE upgrade_test SET r = ";
+    $query .= " ST_AddBand(ST_MakeEmptyRaster(10, 10, 1, 1, 2, 2, 0, 0,4326), 1, '8BSI'::text, -129, NULL);";
+    $ret = sql($query);
+    unless ( $ret =~ /^UPDATE/ ) {
+      `dropdb $DB`;
+      print "\nSomething went wrong setting raster into upgrade_test table: $ret.\n";
+      exit(1);
+    }
+
+    $query = "set client_min_messages to error; select AddRasterConstraints('upgrade_test', 'r')";
     $ret = sql($query);
     unless ( $ret =~ /^t$/ ) {
       `dropdb $DB`;
@@ -328,6 +356,13 @@ sub drop_upgrade_test_objects
 {
   # TODO: allow passing the "upgrade-cleanup" script via commandline
 
+  # my $ret = sql("drop view upgrade_view_test;");
+  # unless ( $ret =~ /^DROP/ ) {
+  #   `dropdb $DB`;
+  #   print "\nSomething went wrong dropping spatial view: $ret.\n";
+  #   exit(1);
+  # }
+
   my $ret = sql("drop table upgrade_test;");
   unless ( $ret =~ /^DROP/ ) {
     `dropdb $DB`;
@@ -350,6 +385,8 @@ sub drop_upgrade_test_objects
 
 if ( $OPT_UPGRADE )
 {
+	print "  Upgrading from postgis $libver\n";
+
   create_upgrade_test_objects();
 
   if ( $OPT_EXTENSIONS )
@@ -553,6 +590,8 @@ Options:
                        if available.
   --dumprestore   dump and restore spatially-enabled db before running tests
   --nodrop        do not drop the regression database on exit
+  --schema        where to install/find PostGIS (relocatable) PostGIS
+                  (defaults to "public")
   --raster        load also raster extension
   --topology      load also topology extension
   --sfcgal        use also sfcgal backend
@@ -675,7 +714,7 @@ sub drop_table
 sub sql
 {
 	my $sql = shift;
-	my $result = `psql -tXA -d $DB -c "$sql"`;
+	my $result = `psql -tXA -d $DB -c 'SET search_path TO public,$OPT_SCHEMA' -c "$sql" | sed '/^SET\$/d'`;
 	$result =~ s/[\n\r]*$//;
 	$result;
 }
@@ -730,12 +769,14 @@ sub run_simple_test
 	mkpath($betmpdir);
 	chmod 0777, $betmpdir;
 
-	my $scriptdir = scriptdir($libver);
+	my $scriptdir = scriptdir($libver, $OPT_EXTENSIONS);
 	my $cmd = "psql -v \"VERBOSITY=terse\""
           . " -v \"tmpfile='$tmpfile'\""
           . " -v \"scriptdir=$scriptdir\""
           . " -v \"regdir=$REGDIR\""
-          . " -tXAq $DB < $sql > $outfile 2>&1";
+          . " -v \"schema=$OPT_SCHEMA.\""
+          . " -c \"SET search_path TO public,$OPT_SCHEMA,topology\""
+          . " -tXAq -f $sql $DB > $outfile 2>&1";
 	my $rv = system($cmd);
 
 	# Check for ERROR lines
@@ -1229,7 +1270,9 @@ sub count_db_objects
 		select count(*) from pg_operator union all
 		select count(*) from pg_opclass union all
 		select count(*) from pg_namespace
-			where nspname NOT LIKE 'pg_%' union all
+			where nspname NOT LIKE 'pg_%'
+			  and nspname != '${OPT_SCHEMA}'
+		union all
 		select count(*) from pg_opfamily
 		)
 		select sum(count) from counts");
@@ -1297,7 +1340,9 @@ sub load_sql_file
 	{
 		# ON_ERROR_STOP is used by psql to return non-0 on an error
 		my $psql_opts = "--no-psqlrc --variable ON_ERROR_STOP=true";
-		my $cmd = "psql $psql_opts -Xf $file $DB >> $REGRESS_LOG 2>&1";
+		my $cmd = "psql $psql_opts -c 'CREATE SCHEMA IF NOT EXISTS $OPT_SCHEMA' ";
+		$cmd .= "-c 'SET search_path TO $OPT_SCHEMA,topology'";
+		$cmd .= " -Xf $file $DB >> $REGRESS_LOG 2>&1";
 		print "  $file\n" if $VERBOSE;
 		my $rv = system($cmd);
 		if ( $rv )
@@ -1314,6 +1359,15 @@ sub prepare_spatial_extensions
 {
 	# ON_ERROR_STOP is used by psql to return non-0 on an error
 	my $psql_opts = "--no-psqlrc --variable ON_ERROR_STOP=true";
+
+	my $sql = "CREATE SCHEMA IF NOT EXISTS ${OPT_SCHEMA}";
+	my $cmd = "psql $psql_opts -c \"". $sql . "\" $DB >> $REGRESS_LOG 2>&1";
+	my $rv = system($cmd);
+	if ( $rv ) {
+	  fail "Error encountered creating target schema ${OPT_SCHEMA}", $REGRESS_LOG;
+	  die;
+	}
+
 	my $sql = "CREATE EXTENSION postgis";
 
 	if ( $OPT_UPGRADE_FROM ) {
@@ -1323,6 +1377,8 @@ sub prepare_spatial_extensions
 		}
 		$sql .= " VERSION '" . $OPT_UPGRADE_FROM . "'";
 	}
+
+	$sql .= " SCHEMA " . $OPT_SCHEMA;
 
 	print "Preparing db '${DB}' using: ${sql}\n";
 
@@ -1363,6 +1419,8 @@ sub prepare_spatial_extensions
 			$sql .= " VERSION '" . $OPT_UPGRADE_FROM . "'";
 		}
 
+		$sql .= " SCHEMA " . $OPT_SCHEMA;
+
 		print "Preparing db '${DB}' using: ${sql}\n";
 
  		$cmd = "psql $psql_opts -c \"" . $sql . "\" $DB >> $REGRESS_LOG 2>&1";
@@ -1386,6 +1444,8 @@ sub prepare_spatial_extensions
 				}
 				$sql .= " VERSION '" . $OPT_UPGRADE_FROM . "'";
 			}
+
+			$sql .= " SCHEMA " . $OPT_SCHEMA;
 
 			print "Preparing db '${DB}' using: ${sql}\n";
 
